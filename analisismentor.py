@@ -20,7 +20,7 @@ st.set_page_config(
 # HEADER
 # ==============================
 st.title("📊 Dashboard Analisis NPS Mentor — BNI")
-st.markdown("Upload dataset NPS dalam format **Excel (.xlsx)** atau **CSV (.csv)** untuk dianalisa otomatis.")
+st.markdown("Upload dataset NPS dalam format **Excel (.xlsx)** atau **CSV (.csv)**.")
 st.markdown("---")
 
 # ==============================
@@ -44,14 +44,27 @@ except Exception as e:
     st.error(f"Gagal membaca file: {e}")
     st.stop()
 
-df.columns = [c.strip() for c in df.columns]
+# ==============================
+# NORMALISASI KOLUM OTOMATIS
+# ==============================
+rename_map = {
+    "person_id":"PERSON_ID",
+    "nama":"NAMA",
+    "kategori":"kategori",
+    "skor_nps":"skor_nps",
+    "id_nps":"id_nps"
+}
 
-# Pastikan kolom inti ada
+df.columns = [c.strip().lower() for c in df.columns]         # lowercase agar mudah
+df.rename(columns=rename_map, inplace=True)                  # rename otomatis
+df.columns = [c.upper() if c in ["PERSON_ID","NAMA"] else c for c in df.columns]
+
+# cek kolom wajib
 expected_cols = ["PERSON_ID","NAMA","kategori","skor_nps"]
 missing = [c for c in expected_cols if c not in df.columns]
 
 if missing:
-    st.error(f"Kolom wajib belum lengkap. Dataset harus memiliki: {expected_cols}")
+    st.error(f"❌ Kolom dataset belum lengkap.\nWajib ada: {expected_cols}\nKolom hilang: {missing}")
     st.stop()
 
 # ==============================
@@ -65,19 +78,17 @@ kategori_selected = st.sidebar.selectbox("Pilih kategori", kategori_list)
 range_min, range_max = int(df["skor_nps"].min()), int(df["skor_nps"].max())
 score_range = st.sidebar.slider("Rentang skor NPS", range_min, range_max, (range_min, range_max))
 
-search_name = st.sidebar.text_input("Cari nama mentor")
+search_name = st.sidebar.text_input("Cari nama")
 
 data = df.copy()
 if kategori_selected != "Semua Kategori":
     data = data[data["kategori"] == kategori_selected]
-
 data = data[(data["skor_nps"] >= score_range[0]) & (data["skor_nps"] <= score_range[1])]
-
 if search_name:
     data = data[data["NAMA"].str.contains(search_name, case=False)]
 
 # ==============================
-# KPI CARD
+# KPI
 # ==============================
 avg_score = data["skor_nps"].mean()
 total_person = data["PERSON_ID"].nunique()
@@ -91,18 +102,18 @@ k3.metric("Mentor unik", total_person)
 k4.metric("Total kategori", total_cat)
 
 # ==============================
-# INSIGHTS
+# INSIGHT OTOMATIS
 # ==============================
 st.subheader("Insight Otomatis")
 cat_summary = df.groupby("kategori")["skor_nps"].mean().reset_index()
 best = cat_summary.loc[cat_summary["skor_nps"].idxmax()]
 worst = cat_summary.loc[cat_summary["skor_nps"].idxmin()]
 
-st.write(f"⭐ Kategori tertinggi: **{best['kategori']}** — {best['skor_nps']:.2f}")
-st.write(f"⚠ Kategori terendah: **{worst['kategori']}** — {worst['skor_nps']:.2f}")
+st.write(f"⭐ Kategori nilai tertinggi: **{best['kategori']}** — {best['skor_nps']:.2f}")
+st.write(f"⚠ Kategori nilai terendah: **{worst['kategori']}** — {worst['skor_nps']:.2f}")
 
 # ==============================
-# VISUAL
+# VISUALISASI
 # ==============================
 st.subheader("Rata-rata Skor per Kategori")
 fig = px.bar(cat_summary.sort_values("skor_nps"),
@@ -114,7 +125,7 @@ st.subheader("Distribusi Nilai NPS")
 st.plotly_chart(px.histogram(data, x="skor_nps", nbins=12), width='stretch')
 
 # ==============================
-# TABLE
+# TABEL
 # ==============================
 st.subheader("Tabel Data")
 data_show = data.copy().reset_index(drop=True)
@@ -130,6 +141,6 @@ def save_excel(df):
         df.to_excel(writer, index=False)
     return out.getvalue()
 
-st.download_button("📥 Download Hasil Filter (Excel)",
+st.download_button("📥 Download Hasil Filter",
                    save_excel(data_show),
-                   file_name="Hasil_Filter_NPS.xlsx")
+                   file_name="Hasil_Filter.xlsx")

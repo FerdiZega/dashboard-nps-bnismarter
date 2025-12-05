@@ -15,7 +15,7 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
-
+st.write("")
 # ==============================
 # HEADER
 # ==============================
@@ -144,3 +144,4 @@ def save_excel(df):
 st.download_button("📥 Download Hasil Filter",
                    save_excel(data_show),
                    file_name="Hasil_Filter.xlsx")
+

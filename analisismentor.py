@@ -1,231 +1,115 @@
-#!/usr/bin/env python
-# coding: utf-8
-
+# dashboard.py
 import os
-import pandas as pd
-import numpy as np
-from tqdm import tqdm
+from pathlib import Path
 import streamlit as st
+import pandas as pd
 import plotly.express as px
-import matplotlib.pyplot as plt
-import webbrowser
-from io import BytesIO
-import polars as pl
-import requests
-from supabase import create_client
+from sqlalchemy import create_engine, text
 
-def load_big_data(file):
-    if file.name.endswith(".csv"):
-        df = pl.read_csv(file)
-    else:
-        df = pl.read_excel(file)
-    return df
+# ---------- Config ----------
+st.set_page_config(page_title="Dashboard NPS Mentor — BNI", layout="wide")
 
-# Supabase Auth
-url="SUPABASE_URL"
-key="SUPABASE_KEY"
-supabase=create_client(url,key)
-
-st.set_page_config(page_title="NPS Dashboard", layout="wide")
-
-# --- Login ---
-auth = supabase.auth.sign_in_with_password if "session" not in st.session_state else None
-
-if auth is None:
-    email = st.text_input("Email")
-    password = st.text_input("Password", type="password")
-    if st.button("Login"):
-        st.session_state.session = supabase.auth.sign_in_with_password({"email":email,"password":password})
+DB_CONN = os.getenv("DB_CONN")  # postgres connection string (server side)
+if not DB_CONN:
+    st.error("DB_CONN environment variable belum di-set. Isi DB_CONN di .env atau secret.")
     st.stop()
 
-st.success("Login berhasil ✔")
+# create SQLAlchemy engine (pooling default)
+engine = create_engine(DB_CONN, pool_pre_ping=True)
 
-# --- Upload → kirim ke FastAPI ---
-file = st.file_uploader("Upload dataset (besar pun bisa)")
-if file and st.button("Upload"):
-    res = requests.post("https://your-backend-url/upload", files={"file":file})
-    st.success(res.json())
-
-# --- Query data Supabase ---
-data = supabase.table("nps_data").select("*").execute().data
-df = pd.DataFrame(data)
-
-st.dataframe(df.head())
-
-# ---------------- CONFIG ----------------
-st.set_page_config(
-    page_title="Dashboard NPS Mentor — BNI",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-st.write("")
-# ---------------- FOLDER CSV ----------------
-csv_folder = "csv_output"
-os.makedirs(csv_folder, exist_ok=True)
-
-# ---------------- LOAD EXCEL ----------------
-excel_file = "dummy_dataset_full.xlsx"
-if os.path.exists(excel_file):
-    xls = pd.ExcelFile(excel_file)
-    print(f"Converting Excel to CSV in folder '{csv_folder}'...")
-    for sheet in tqdm(xls.sheet_names, desc="Converting sheets"):
-        df = pd.read_excel(xls, sheet_name=sheet)
-        df.to_csv(os.path.join(csv_folder, f"{sheet}.csv"), index=False)
-    print("Conversion complete!")
-else:
-    print("File dummy_dataset_full.xlsx tidak ditemukan. Menggunakan dummy data.")
-    # buat dummy CSV minimal agar dashboard jalan
-    cats = ["Fasilitator Internal","Fasilitator Eksternal","Mentor Lapangan",
-            "Buddy Lapangan","Coach Lapangan","Pensiunan Observer"]
-    rows = []
-    pid = 1000
-    for cat in cats:
-        for i in range(50):
-            pid += 1
-            rows.append({
-                "PERSON_ID": pid,
-                "NAMA": f"Nama {pid}",
-                "kategori": cat,
-                "skor_nps": int(np.clip(np.random.normal(75,10),40,100))
-            })
-    master_nps = pd.DataFrame(rows)
-
-# ---------------- LOAD CSV ----------------
-def load_csv(name):
-    path = os.path.join(csv_folder, name)
-    if os.path.exists(path):
-        return pd.read_csv(path)
-    else:
-        return pd.DataFrame()
-
-if 'master_nps' not in locals():
-    # Load CSV dari folder
-    m_biodata       = load_csv("m_biodata.csv")
-    mentor_lapangan = load_csv("mentor_lapangan.csv")
-    fasil_internal  = load_csv("fasil_internal.csv")
-    fasil_eksternal = load_csv("fasil_eksternal.csv")
-    buddy           = load_csv("buddy_lapangan.csv")
-    coach           = load_csv("coach_lapangan.csv")
-    observer        = load_csv("observer_pensiun.csv")
-
-    nps_mentor      = load_csv("nps_mentor_lapangan.csv")
-    nps_fi          = load_csv("nps_fasil_internal.csv")
-    nps_fe          = load_csv("nps_fasil_eksternal.csv")
-    nps_buddy       = load_csv("nps_buddy.csv")
-    nps_coach       = load_csv("nps_coach.csv")
-    nps_observer    = load_csv("nps_pensiunan_observer.csv")
-
-    # ---------------- NORMALISASI ----------------
-    def normalize_person_col(df):
-        for c in df.columns:
-            if c.upper().strip() in ["PERSON_ID","PERSONID","PERSON"]:
-                df = df.rename(columns={c: "PERSON_ID"})
-                return df
-        return df
-
-    nps_tables = [
-        (nps_mentor, "Mentor Lapangan"),
-        (nps_fi, "Fasilitator Internal"),
-        (nps_fe, "Fasilitator Eksternal"),
-        (nps_buddy, "Buddy Lapangan"),
-        (nps_coach, "Coach Lapangan"),
-        (nps_observer, "Pensiunan Observer")
-    ]
-
-    normalized = []
-    for df, cat in nps_tables:
-        df = normalize_person_col(df)
-        if "PERSON_ID" not in df.columns and not m_biodata.empty:
-            possible = [c for c in df.columns if df[c].isin(m_biodata["person_id"]).any()]
-            if possible:
-                df = df.rename(columns={possible[0]: "PERSON_ID"})
-        df["kategori"] = cat
-        if "skor_nps" not in df.columns:
-            for alt in ["skor","score","nps","skor_nps"]:
-                if alt in df.columns:
-                    df = df.rename(columns={alt:"skor_nps"})
-        if all(col in df.columns for col in ["PERSON_ID","skor_nps","kategori"]):
-            normalized.append(df[["PERSON_ID","skor_nps","kategori"]])
-
-    master_nps = pd.concat(normalized, ignore_index=True, sort=False)
-
-    if not m_biodata.empty:
-        m_biodata_renamed = m_biodata.rename(columns={"person_id":"PERSON_ID","nama":"NAMA"})
-        master_nps = master_nps.merge(m_biodata_renamed[["PERSON_ID","NAMA","UNIT","GRADE","JABATAN","TGL_MASUK"]],
-                                      on="PERSON_ID", how="left")
-
-# ---------------- DASHBOARD ----------------
 st.title("📊 Dashboard Analisis NPS Mentor — BNI")
-st.markdown("Dashboard menampilkan ringkasan kinerja mentor berdasarkan nilai NPS.")
+st.markdown("Dashboard membaca data langsung dari database. Upload lewat halaman upload (uploader).")
 st.markdown("---")
 
-# Sidebar filter
-st.sidebar.header("Filter Data")
-kategori_list = ["Semua Kategori"] + sorted(master_nps["kategori"].unique().tolist())
+# ---------- Sidebar: filter ----------
+with engine.connect() as conn:
+    # ambil daftar kategori dari DB (limit kecil)
+    q = text("SELECT DISTINCT kategori FROM nps_data ORDER BY kategori")
+    categories = [r[0] for r in conn.execute(q).fetchall()]
+
+kategori_list = ["Semua Kategori"] + categories
 kategori_selected = st.sidebar.selectbox("Pilih Kategori", kategori_list)
 
-score_min, score_max = int(master_nps["skor_nps"].min()), int(master_nps["skor_nps"].max())
-score_range = st.sidebar.slider("Rentang NPS", score_min, score_max, (score_min, score_max))
+# date / optional filters
+min_score, max_score = st.sidebar.slider("Rentang skor NPS", 0, 100, (0, 100))
+search_name = st.sidebar.text_input("Cari nama (substring)")
 
-search_name = st.sidebar.text_input("Cari nama mentor")
+# ---------- Aggregate query (server side) ----------
+# rata-rata per kategori
+with engine.connect() as conn:
+    q_cat = text("""
+        SELECT kategori, ROUND(AVG(skor_nps)::numeric,2) AS mean_nps, COUNT(*) AS n
+        FROM nps_data
+        GROUP BY kategori
+        ORDER BY mean_nps DESC
+    """)
+    df_cat = pd.read_sql(q_cat, conn)
 
-# Filter data
-df_filtered = master_nps.copy()
-if kategori_selected != "Semua Kategori":
-    df_filtered = df_filtered[df_filtered["kategori"]==kategori_selected]
-df_filtered = df_filtered[(df_filtered["skor_nps"]>=score_range[0]) & (df_filtered["skor_nps"]<=score_range[1])]
-if search_name.strip():
-    df_filtered = df_filtered[df_filtered["NAMA"].str.contains(search_name, case=False, na=False)]
-
-# KPI
-avg_nps = df_filtered["skor_nps"].mean()
-total_mentor = df_filtered["PERSON_ID"].nunique()
-total_cat = master_nps["kategori"].nunique()
-total_rows = len(df_filtered)
-
-k1,k2,k3,k4 = st.columns(4)
-k1.metric("Rata-rata NPS", f"{avg_nps:.2f}")
-k2.metric("Jumlah baris", total_rows)
-k3.metric("Jumlah mentor unik", total_mentor)
-k4.metric("Jumlah kategori total", total_cat)
-
-# Insight otomatis
-avg_by_cat = master_nps.groupby("kategori")["skor_nps"].mean().reset_index()
-best_cat = avg_by_cat.loc[avg_by_cat["skor_nps"].idxmax()]
-worst_cat = avg_by_cat.loc[avg_by_cat["skor_nps"].idxmin()]
-
-st.subheader("Insight Otomatis")
-st.write(f"- Kategori terbaik: **{best_cat['kategori']}** ({best_cat['skor_nps']:.2f})")
-st.write(f"- Kategori terendah: **{worst_cat['kategori']}** ({worst_cat['skor_nps']:.2f})")
-
-# Charts
 st.subheader("Rata-rata NPS per Kategori")
-fig_cat = px.bar(avg_by_cat.sort_values("skor_nps"), x="skor_nps", y="kategori",
-                 orientation="h", text=avg_by_cat["skor_nps"].round(2))
-st.plotly_chart(fig_cat, use_container_width=True)
+if df_cat.empty:
+    st.info("Belum ada data di tabel nps_data.")
+else:
+    fig = px.bar(df_cat.sort_values("mean_nps"), x="mean_nps", y="kategori", orientation="h",
+                 labels={"mean_nps":"Rata-rata NPS","kategori":"Kategori"}, text="mean_nps")
+    st.plotly_chart(fig, use_container_width=True)
 
-st.subheader("Distribusi Nilai NPS")
-fig_hist = px.histogram(df_filtered, x="skor_nps", nbins=12)
-st.plotly_chart(fig_hist, use_container_width=True)
+# ---------- Build filtered result (limited rows) ----------
+where_clauses = []
+params = {}
 
-# Tabel data
-st.subheader("Tabel Data (Filtered)")
-df_display = df_filtered.copy().reset_index(drop=True)
-df_display["no"] = df_display.index+1
-cols_order = ["no","PERSON_ID","NAMA","kategori","skor_nps"]
-st.dataframe(df_display[cols_order])
+if kategori_selected != "Semua Kategori":
+    where_clauses.append("kategori = :kategori")
+    params["kategori"] = kategori_selected
 
-# Download Excel
-def to_excel(df):
-    buf = BytesIO()
-    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="nps_filtered")
-    return buf.getvalue()
+where_clauses.append("skor_nps BETWEEN :min_s AND :max_s")
+params["min_s"] = int(min_score)
+params["max_s"] = int(max_score)
 
-st.download_button("📥 Download Excel", to_excel(df_display), file_name="nps_filtered.xlsx")
+if search_name:
+    where_clauses.append("LOWER(nama) LIKE :name")
+    params["name"] = f"%{search_name.lower()}%"
 
-# ---------------- AUTO OPEN BROWSER ----------------
-try:
-    webbrowser.open("http://localhost:8501")
-except:
-    pass
+where_sql = " AND ".join(where_clauses)
+base_q = f"""
+    SELECT person_id, nama, kategori, skor_nps, id_nps, created_at
+    FROM nps_data
+    WHERE {where_sql}
+    ORDER BY skor_nps DESC
+    LIMIT 1000
+"""
+
+with engine.connect() as conn:
+    df_sample = pd.read_sql(text(base_q), conn, params=params)
+
+st.subheader("Sample Data (max 1000 rows)")
+st.write(f"Menampilkan sampai 1.000 baris — gunakan filter untuk mempersempit hasil.")
+st.dataframe(df_sample)
+
+# ---------- KPI ----------
+with engine.connect() as conn:
+    q_kpi = text(f"""
+        SELECT
+          COUNT(*) FILTER (WHERE skor_nps BETWEEN :min_s AND :max_s) as rows_filtered,
+          COUNT(DISTINCT person_id) FILTER (WHERE skor_nps BETWEEN :min_s AND :max_s) as unique_persons,
+          ROUND(AVG(skor_nps) FILTER (WHERE skor_nps BETWEEN :min_s AND :max_s)::numeric,2) as avg_nps
+        FROM nps_data
+    """)
+    kpi = conn.execute(q_kpi, {"min_s": params["min_s"], "max_s": params["max_s"]}).fetchone()
+
+k1,k2,k3 = st.columns(3)
+k1.metric("Rata-rata NPS (filter)", f"{kpi['avg_nps'] if kpi['avg_nps'] is not None else 0}")
+k2.metric("Jumlah baris (filter)", f"{kpi['rows_filtered']}")
+k3.metric("Jumlah mentor unik (filter)", f"{kpi['unique_persons']}")
+
+# ---------- Download sample ----------
+def to_excel_bytes(df):
+    import io
+    buf = io.BytesIO()
+    df.to_excel(buf, index=False)
+    buf.seek(0)
+    return buf
+
+if not df_sample.empty:
+    st.download_button("📥 Download Sample (Excel)", to_excel_bytes(df_sample), file_name="nps_sample.xlsx")
+
+st.info("Catatan: Dashboard ini melakukan agregasi di database — cocok untuk dataset besar.")
